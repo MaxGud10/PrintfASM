@@ -1,4 +1,4 @@
-EOL equ 00
+EOL        equ 00
 BUFFER_LEN equ 256
 
 global myPrintf
@@ -6,6 +6,16 @@ global myPrintf
 section .bss
 
 buffer      resb BUFFER_LEN
+
+%macro checkOverflow 0
+
+        cmp rdi, buffer + BUFFER_LEN - 64 - 1  ; проверяем, не достиг ли указатель буфера предела
+        jb %%noFlush                           ; если нет, пропускаем flush
+
+        call flushBuffer                       ; иначе вызываем flushBuffer
+%%noFlush:
+
+%endmacro
 
 section .data
 
@@ -15,12 +25,38 @@ section .text
 
 ;-------------------------------------------------------------------------------
 ;
-; [Brief]: printf cover for C language.
+; [Function]: myPrintf
 ;
-; [Expects]: rdi - format string, 
-;            args: rsi, rdx, rcx, r8, r9,
-;            stack (cdecl).   
+; [Description]:
+;   реализация функции, аналогичной printf из стандартной библиотеки C.
+;   поддерживает форматированный вывод с использованием спецификаторов:
+;   %c, %s, %d, %b, %o, %x. функция обрабатывает строку формата и выводит
+;   данные в стандартный вывод (stdout) с использованием буфера.
 ;
+; [Arguments]:
+;   - rdi: указатель на строку формата (format string).
+;          строка формата может содержать обычные символы и спецификаторы:
+;          %c (символ), %s (строка), %d (десятичное число),
+;          %b (двоичное число), %o (восьмеричное число), %x (шестнадцатеричное число).
+;   - rsi, rdx, rcx, r8, r9: первые пять аргументов, соответствующие спецификаторам.
+;   - остальные аргументы передаются через стек (соглашение cdecl).
+;
+; [Stack Layout]:
+;   | n-й аргумент    | <- rbp + 16 + 8n
+;   |      ...        |
+;   | 2-й аргумент    | <- rbp + 24
+;   | 1-й аргумент    | <- rbp + 16
+;   | адрес возврата  | <- rbp + 8
+;   | сохраненный rbp | <- rbp
+;  
+; [Registers Usage]:
+;   - rdi: указатель на строку формата.
+;   - rsi: указатель на текущий символ строки формата.
+;   - rbx: счетчик аргументов.
+;   - rbp: указатель на стековый фрейм.
+;   - r10: временное хранение адреса возврата.
+;
+; [Save]: rsi, rdi, rbx, rbp.
 ;-------------------------------------------------------------------------------
 
 myPrintf:    
@@ -44,7 +80,7 @@ myPrintf:
 
             pop r10                 ; достаем старый адрес возврата
 
-            add rsp, 6 * 8          ; балансируем стек
+            add rsp, 6 * 8          ; балансируем стек (удаляем 6 аргументов (6 * 8 байт))
 
             push r10                ; кладем адрес возврата обратно
 
@@ -59,7 +95,7 @@ myPrintf:
 ; [Expects]: 
 ;   - rdi: строка формата (например, "Hello, %s! %d").
 ;   - rsi, rdx, rcx, r8, r9: первые пять аргументов.
-;   - Остальные аргументы передаются через стек (соглашение cdecl).    
+;   - остальные аргументы передаются через стек (соглашение cdecl).    
 ;
 ; [Example of the arrangement of arguments on the stack]:
 ;   | n-й аргумент    | <- rbp + 16 + 8n
@@ -69,8 +105,7 @@ myPrintf:
 ;   | адрес возврата  | <- rbp + 8
 ;   | сохраненный rbp | <- rbp
 ;
-;  [Save]: rsi, rdi, rbx, rbp.
-;   TODO добавить проверку на переполнение буфера
+; [Save]: rsi, rdi, rbx, rbp.
 ;-------------------------------------------------------------------------------
 
 myPrintfImpl:
@@ -80,13 +115,13 @@ myPrintfImpl:
 
             mov rbx, 0              ; счетчик аргументов
 
-.mainLoop:
+.processFormatString:
             xor rax, rax            ; очищаем rax
 
             lodsb                   ; загружаем следующий символ
 
             cmp al, EOL             ; проверка на конец строки
-            je .end
+            je endProcessing
 
             cmp al, '%'             
             je .conversionSpecifier 
@@ -94,7 +129,9 @@ myPrintfImpl:
             mov [rdi], al           ; копируем символ в буфер 
             inc  rdi                ; сдвигаем адрес буфера
 
-            jmp .mainLoop           ; переходим к следующему символу
+            checkOverflow           ; проверка на переполнение буфера
+
+            jmp .processFormatString           ; переходим к следующему символу
 
 .conversionSpecifier:
 
@@ -103,42 +140,50 @@ myPrintfImpl:
             lodsb                   ; загружаем следующий символ                   
 
             cmp al, '%'             ; случай '%'
-            je .symbolPercent
+            je .printPercent
 
             cmp al, 'x'             ; символ > x
-            ja .differentSymbol
+            ja .invalidSpecifier
 
             cmp al, 'b'             ; символ < b
-            jb .differentSymbol     
+            jb .invalidSpecifier     
 
-            sub al, 'b'             ; получаем номер адреса
+            ; jmp rax, [.specifierHandlers + rax * 8 ] 
 
-            mov rax, [.formatSpecifiers + rax * 8]
-            jmp rax                 ; переход
+            ;sub al, 'b'             ; получаем номер адреса
+
+            ;mov rax, [.specifierHandlers + rax * 8]  
+            jmp [.specifierHandlers + (rax - 'b') * 8]              
 
 ;-------------------------------------------------------------------------------
 ;
-; Таблица переходов для символов: b, c, d, o, s, x.
+; Таблица переходов для обработки спецификаторов:
+;   - %b: двоичное число
+;   - %c: символ
+;   - %d: десятичное число
+;   - %o: восьмеричное число
+;   - %s: строка
+;   - %x: шестнадцатеричное число
 ;
 ;-------------------------------------------------------------------------------
 
-.formatSpecifiers:
+.specifierHandlers:
 
-            dq .symbolB             ; case 'b'
-            dq .symbolC             ; case 'c'
-            dq .symbolD             ; case 'd'
+            dq .handleBinary             ; case 'b'
+            dq .handleChar               ; case 'c'
+            dq .handleDecimal            ; case 'd'
 
-            times ('n' - 'd') dq .differentSymbol           
+            times ('n' - 'd') dq .invalidSpecifier           
                                                             
-            dq .symbolO             ; case 'o'              
+            dq .handleOctal              ; case 'o'              
                                                              
-            times ('r' - 'o') dq .differentSymbol           
+            times ('r' - 'o') dq .invalidSpecifier           
                                                             
-            dq .symbolS             ; case 's'              
+            dq .handleString             ; case 's'              
                                                             
-            times ('w' - 's') dq .differentSymbol           
+            times ('w' - 's') dq .invalidSpecifier           
 
-            dq .symbolX             ; case 'x'
+            dq .handleHex                  ; case 'x'
 ;------------------------------------------------------------------------------
 
 
@@ -146,14 +191,16 @@ myPrintfImpl:
 ; обработка спецификатора '%c' 
 ;-------------------------------------------------------------------------------
 
-.symbolC:
+.handleChar:
             inc rbx
 
             mov al, [rbp + 16 + 8 * rbx]
 
             stosb
 
-            jmp .mainLoop
+            checkOverflow           ; проверка на переполнение буфера
+
+            jmp .processFormatString
 ;-------------------------------------------------------------------------------
 
 
@@ -161,7 +208,7 @@ myPrintfImpl:
 ; обработка спецификатора '%s' 
 ;-------------------------------------------------------------------------------
 
-.symbolS:
+.handleString:
 
             inc rbx
 
@@ -169,11 +216,11 @@ myPrintfImpl:
 
             mov rsi, [rbp + 16 + 8 * rbx]
 
-            call copy2Buffer
+            call copyStringToBuffer
 
             pop rsi                 ; восстанавливаем rsi
 
-            jmp .mainLoop
+            jmp .processFormatString
 ;-------------------------------------------------------------------------------
 
 
@@ -181,10 +228,10 @@ myPrintfImpl:
 ; обработка спецификатора '%d' 
 ;-------------------------------------------------------------------------------
 
-.symbolD:
+.handleDecimal:
 
-            call printNumBase10
-            jmp .mainLoop
+            call printDecimalNumber
+            jmp .processFormatString
 ;-------------------------------------------------------------------------------
 
 
@@ -192,22 +239,22 @@ myPrintfImpl:
 ; обработка спецификатора '%b' 
 ;-------------------------------------------------------------------------------
 
-.symbolB:
+.handleBinary:
 
             mov cl, 1
             call printNumBase2n
-            jmp .mainLoop 
+            jmp .processFormatString 
 ;-------------------------------------------------------------------------------
 
 ;-------------------------------------------------------------------------------
 ; обработка спецификатора '%o' 
 ;-------------------------------------------------------------------------------
 
-.symbolO:
+.handleOctal:
 
             mov cl, 3
             call printNumBase2n
-            jmp .mainLoop
+            jmp .processFormatString
 ;-------------------------------------------------------------------------------
 
 
@@ -215,38 +262,42 @@ myPrintfImpl:
 ; обработка спецификатора '%x' 
 ;-------------------------------------------------------------------------------
 
-.symbolX:
+.handleHex:
 
             mov cl, 4
             call printNumBase2n
-            jmp .mainLoop 
+            jmp .processFormatString 
 ;-------------------------------------------------------------------------------
 
-.differentSymbol:
+.invalidSpecifier:
 
             mov byte [rdi], '%'
             inc rdi
 
-            jmp .mainLoop
+            checkOverflow           ; проверка на переполнение буфера
 
-.symbolPercent:
+            jmp .processFormatString
+
+.printPercent:
 
             stosb
 
-            jmp .mainLoop
+            checkOverflow           ; проверка на переполнение буфера
 
-.end:
+            jmp .processFormatString
 
+endProcessing:
             call flushBuffer
 
             xor rax, rax            ; rdi - возвращаемое значение 0
             ret
 
-copy2Buffer:
+copyStringToBuffer:
 
 .copyByte:
 
-            ; проверка на переполнение буфера
+            checkOverflow           ; проверка на переполнение буфера
+
             lodsb
             cmp al, EOL
 
@@ -282,14 +333,16 @@ printNumBase2n:
 .isNegative:
 
             test edx, edx
-            jns .loop
+            jns .printDigits
             
             mov al, '-'
             stosb
 
             neg edx
 
-.loop:
+.printDigits:
+
+            checkOverflow           ; проверка на переполнение буфера
 
             mov rax, r8
             and rax, rdx
@@ -302,7 +355,7 @@ printNumBase2n:
 
             test edx, edx
 
-            jne .loop
+            jne .printDigits
 
             pop rax
 
@@ -312,7 +365,7 @@ printNumBase2n:
 
             ret
 
-printNumBase10:
+printDecimalNumber:
 
             inc rbx
 
@@ -334,7 +387,7 @@ printNumBase10:
             mov eax, edx
 
             test edx, edx           ; проверка на знак
-            jns .loop
+            jns .printDigits
 
             mov al, '-'             ; символ '-'
             stosb
@@ -344,7 +397,9 @@ printNumBase10:
             neg eax                 ; делаем число беззнаковым
 
 
-.loop:
+.printDigits:
+
+            checkOverflow           ; проверка на переполнение буфера
 
             xor edx, edx            ; очищаем rdx 
             div ebx
@@ -355,7 +410,7 @@ printNumBase10:
 
             test eax, eax
 
-            jne .loop
+            jne .printDigits
 
             pop rbx
 
@@ -375,12 +430,12 @@ countBytes:
             xor ch, ch
             mov rax, rdx
 
-.loop:
+.countLoop:
             inc ch
             shr rax, cl
 
             test rax, rax
-            jne .loop
+            jne .countLoop
 
             xor rax, rax
 
