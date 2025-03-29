@@ -8,8 +8,7 @@ SUCCESS      equ 0
 ERROR        equ -1
 ;-----End of constants----------------------------------------------------------
 
-;----Start of checkOverflow macro-----------------------------------------------
-
+;-----Macros-------------------------------------------------------------------
 %macro checkOverflow 0
 
         cmp rdi, buffer + BUFFER_LEN - 64 - 1
@@ -19,10 +18,6 @@ ERROR        equ -1
 %%noFlush:
 
 %endmacro
-
-;-----End of checkOverflow macro------------------------------------------------
-
-;-----Start of multipush macro--------------------------------------------------
 
 %macro  multipush 1-* 
 
@@ -36,15 +31,13 @@ ERROR        equ -1
 
 %endmacro
 
-;-----End of multipush macro----------------------------------------------------
+; section .bss
 
-section .bss
+; buffer      resb BUFFER_LEN
 
-buffer      resb BUFFER_LEN
+; section .data
 
-section .data
-
-hexTable  db '0123456789ABCDEF'
+; hexTable  db '0123456789ABCDEF'
 
 section .text
 
@@ -108,7 +101,7 @@ myPrintfImpl:
 
             mov rbx, 0              ; argument counter
 
-            xor r11, r11            ; общий счетчик выведенных байт
+            xor r11, r11            ; ????? ??????? ?????????? ????
 
 .processFormatString:
             xor rax, rax            ; clean rax
@@ -142,7 +135,7 @@ myPrintfImpl:
             ja .invalidSpecifier
 
             cmp al, 'b'             ; sym < b
-            jb .invalidSpecifier     ; TODO: error handling and put rax 
+            jb .invalidSpecifier     
 
             jmp [.specifierHandlers + (rax - 'b') * ADDRESS_SIZE]             
 
@@ -156,21 +149,21 @@ myPrintfImpl:
 
 .specifierHandlers:
 
-                                  dq .handleBinary             ; case 'b'
+                                  dq .handleBinary           ; case 'b'
                                   dq .handleChar             ; case 'c'
-                                  dq .handleDecimal             ; case 'd'
+                                  dq .handleDecimal          ; case 'd'
 
             times ('o' - 'd' - 1) dq .invalidSpecifier      
                                                             
-                                  dq .handleOctal             ; case 'o'              
+                                  dq .handleOctal            ; case 'o'              
                                                              
             times ('s' - 'o' - 1) dq .invalidSpecifier           
                                                             
-                                  dq .handleString             ; case 's'              
+                                  dq .handleString           ; case 's'              
                                                             
             times ('x' - 's' - 1) dq .invalidSpecifier           
 
-                                  dq .handleHex             ; case 'x'
+                                  dq .handleHex              ; case 'x'
 
 ;-----End of jump table---------------------------------------------------------
 
@@ -182,7 +175,7 @@ myPrintfImpl:
             mov al, [rbp + 16 + ADDRESS_SIZE * rbx]
 
             stosb 
-            inc r11                 ; увеличиваем счетчик байт
+            inc r11                
 
             checkOverflow
 
@@ -254,7 +247,7 @@ myPrintfImpl:
 
             inc r11
 
-            checkOverflow           ; ???????? ?? ???????????? ??????
+            checkOverflow           
 
             jmp .processFormatString
 
@@ -264,7 +257,7 @@ myPrintfImpl:
 
             inc r11
 
-            checkOverflow           ; ???????? ?? ???????????? ??????
+            checkOverflow          
 
             jmp .processFormatString
 
@@ -272,14 +265,14 @@ myPrintfImpl:
 
             call flushBuffer
 
-            test rax, rax           ; проверка на ошибку
+            test rax, rax           
             jnz .endWithError
 
             xor rax, rax            ; rdi - return value 0
             ret
 
 .endWithError:
-            mov rax, ERROR          ; возвращаем код ошибки
+            mov rax, ERROR          
             ret
 
 ;-----End of myPrintf label-----------------------------------------------------
@@ -383,9 +376,9 @@ printNumBase2n:
             pop rax
             pop rdi
             add rdi, rax
-            inc rdi                 ; пропускаем добавленный пробел
-            add r11, rax            ; добавляем длину числа к счетчику
-            inc r11                 ; добавляем пробел           
+            inc rdi                 
+            add r11, rax            
+            inc r11                            
     
             checkOverflow
     
@@ -471,7 +464,7 @@ printDecimalNumber:
 
             inc rdi
 
-            add r11, r9         ; обавляем длину числа к счетчику
+            add r11, r9         
 
             ret
 
@@ -500,7 +493,7 @@ printDecimalNumber:
 
 ;-----Start of countBytes label-------------------------------------------------
 
-countBytesNumBase2n:                            ; TODO: use another buffer with string and then reverse
+countBytesNumBase2n:                          
 
             xor rax, rax
             xor ch, ch
@@ -554,17 +547,16 @@ flushBuffer:
             mov rsi, buffer
             syscall
             
-            ; Проверяем на ошибку
             cmp rax, 0
             jl .error
             
 .success:
             mov rdi, buffer     ; reset buffer pointer
-            xor rax, rax        ; возвращаем успех
+            xor rax, rax        
             jmp .end
             
 .error:
-            mov rax, ERROR      ; возвращаем ошибку
+            mov rax, ERROR      
             
 .end:
             pop rdi
@@ -573,5 +565,11 @@ flushBuffer:
             ret
 
 ;-----End of flushBuffer lable--------------------------------------------------
-; 
+
+section .bss
+buffer      resb BUFFER_LEN
+
+section .data
+hexTable    db '0123456789ABCDEF'
+
 section .note.GNU-stack noalloc noexec nowrite progbits
