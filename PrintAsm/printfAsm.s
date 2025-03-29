@@ -1,21 +1,46 @@
-EOL        equ 00
-BUFFER_LEN equ 256
-
 global myPrintf
+
+;-----Start of constants--------------------------------------------------------
+
+EOL          equ 00
+BUFFER_LEN   equ 264
+ADDRESS_SIZE equ 8
+
+;-----End of constants----------------------------------------------------------
+
+;----Start of checkOverflow macro-----------------------------------------------
+
+%macro checkOverflow 0
+
+        cmp rdi, buffer + BUFFER_LEN - 64 - 1
+        jb %%noFlush
+
+        call flushBuffer
+%%noFlush:
+
+%endmacro
+
+;-----End of checkOverflow macro------------------------------------------------
+
+;-----Start of multipush macro--------------------------------------------------
+
+%macro  multipush 1-* 
+
+        %rep  %0
+
+        push    %1
+
+        %rotate 1
+
+        %endrep 
+
+%endmacro
+
+;-----End of multipush macro----------------------------------------------------
 
 section .bss
 
 buffer      resb BUFFER_LEN
-
-%macro checkOverflow 0
-
-        cmp rdi, buffer + BUFFER_LEN - 64 - 1  ; проверяем, не достиг ли указатель буфера предела
-        jb %%noFlush                           ; если нет, пропускаем flush
-
-        call flushBuffer                       ; иначе вызываем flushBuffer
-%%noFlush:
-
-%endmacro
 
 section .data
 
@@ -25,249 +50,204 @@ section .text
 
 ;-------------------------------------------------------------------------------
 ;
-; [Function]: myPrintf
+; [Brief]: printf cover for C language.
 ;
-; [Description]:
-;   реализация функции, аналогичной printf из стандартной библиотеки C.
-;   поддерживает форматированный вывод с использованием спецификаторов:
-;   %c, %s, %d, %b, %o, %x. функция обрабатывает строку формата и выводит
-;   данные в стандартный вывод (stdout) с использованием буфера.
+; [Expects]: rdi - format string, 
+;            args: rsi, rdx, rcx, r8, r9,
+;            stack (cdecl).        
 ;
-; [Arguments]:
-;   - rdi: указатель на строку формата (format string).
-;          строка формата может содержать обычные символы и спецификаторы:
-;          %c (символ), %s (строка), %d (десятичное число),
-;          %b (двоичное число), %o (восьмеричное число), %x (шестнадцатеричное число).
-;   - rsi, rdx, rcx, r8, r9: первые пять аргументов, соответствующие спецификаторам.
-;   - остальные аргументы передаются через стек (соглашение cdecl).
-;
-; [Stack Layout]:
-;   | n-й аргумент    | <- rbp + 16 + 8n
-;   |      ...        |
-;   | 2-й аргумент    | <- rbp + 24
-;   | 1-й аргумент    | <- rbp + 16
-;   | адрес возврата  | <- rbp + 8
-;   | сохраненный rbp | <- rbp
-;  
-; [Registers Usage]:
-;   - rdi: указатель на строку формата.
-;   - rsi: указатель на текущий символ строки формата.
-;   - rbx: счетчик аргументов.
-;   - rbp: указатель на стековый фрейм.
-;   - r10: временное хранение адреса возврата.
-;
-; [Save]: rsi, rdi, rbx, rbp.
 ;-------------------------------------------------------------------------------
 
+;-----start of myPrintf label--------------------------------------------------
+
 myPrintf:    
-            pop r10                 ; сохраняем адрес возврата
+            pop r10                 ; save return address
 
-            push r9                 ; 
-            push r8                 ;
-            push rcx                ; сохраняем аргументы
-            push rdx                ;
-            push rsi                ;
-            push rdi                ;
+            multipush r9, r8, rcx, rdx, rsi, rdi
 
-            push r10                ; кладем адрес возврата обратно
+            push r10                ; put return address
 
-            push rbp                
-            mov  rbp, rsp            
+            push rbp                ;
+            mov  rbp, rsp           ; stack frame prologue
 
-            call myPrintfImpl       
+            call myPrintfImpl          
 
-            pop rbp                 ; эпилог стека
+            pop rbp                 ; stack frame epilogue
 
-            pop r10                 ; достаем старый адрес возврата
+            pop r10                 ; pop old address
 
-            add rsp, 6 * 8          ; балансируем стек (удаляем 6 аргументов (6 * 8 байт))
+            add rsp, 6 * 8          ; balance the stack
 
-            push r10                ; кладем адрес возврата обратно
+            push r10                ; push return address 
 
             ret
 
-;-----конец функции myPrintf----------------------------------------------------
+;-----end of myPrintfC label----------------------------------------------------
 
 ;-------------------------------------------------------------------------------
 ;
-; [Brief]: реализация printf
+; [Brief]: printf implementation
 ;
-; [Expects]: 
-;   - rdi: строка формата (например, "Hello, %s! %d").
-;   - rsi, rdx, rcx, r8, r9: первые пять аргументов.
-;   - остальные аргументы передаются через стек (соглашение cdecl).    
+; [Expects]: rdi - format string, 
+;            args: rsi, rdx, rcx, r8, r9,
+;            stack (cdecl). 
 ;
-; [Example of the arrangement of arguments on the stack]:
-;   | n-й аргумент    | <- rbp + 16 + 8n
-;   |      ...        |
-;   | 2-й аргумент    | <- rbp + 24
-;   | 1-й аргумент    | <- rbp + 16
-;   | адрес возврата  | <- rbp + 8
-;   | сохраненный rbp | <- rbp
+; [Example]: 
+;            | n'th argument  | <- rbp + 16 + 8n
+;            |      ...       |
+;            | 2nd argument   | <- rbp + 24
+;            | 1nd argument   | <- rbp + 16
+;            | return address | <- rbp + 8
+;            | saved rbp      | <- rbp
 ;
-; [Save]: rsi, rdi, rbx, rbp.
+; [Save]:    rsi, rdi, rbx, rbp 
+;
 ;-------------------------------------------------------------------------------
 
+;-----start of myPrintf label---------------------------------------------------
 myPrintfImpl:
-            mov rsi, [rbp + 16]     ; строка формата 
+            mov rsi, [rbp + 16]     ; format string 
 
-            mov rdi, buffer         ; буфер 
+            mov rdi, buffer         ; buffer 
 
-            mov rbx, 0              ; счетчик аргументов
+            mov rbx, 0              ; argument counter
 
 .processFormatString:
-            xor rax, rax            ; очищаем rax
+            xor rax, rax            ; clean rax
 
-            lodsb                   ; загружаем следующий символ
+            lodsb
 
-            cmp al, EOL             ; проверка на конец строки
-            je endProcessing
+            cmp al, EOL
 
-            cmp al, '%'             
-            je .conversionSpecifier 
+            je .endProcessing
 
-            mov [rdi], al           ; копируем символ в буфер 
-            inc  rdi                ; сдвигаем адрес буфера
+            cmp al, '%'
+
+            je .conversionSpecifier
+
+            mov [rdi], al           ; copy char to buffer 
+            inc rdi                 ; shift buffer address
 
             checkOverflow           ; проверка на переполнение буфера
 
-            jmp .processFormatString           ; переходим к следующему символу
+            jmp .processFormatString           ; proceed to next char
 
 .conversionSpecifier:
 
-            xor rax, rax            ; очищаем rax
+            xor rax, rax            ; clean rax
 
-            lodsb                   ; загружаем следующий символ                   
+            lodsb                   ; load next symbol                   
 
-            cmp al, '%'             ; случай '%'
+            cmp al, '%'             ; case '%'
             je .printPercent
 
-            cmp al, 'x'             ; символ > x
+            cmp al, 'x'             ; sym > x
             ja .invalidSpecifier
 
-            cmp al, 'b'             ; символ < b
-            jb .invalidSpecifier     
+            cmp al, 'b'             ; sym < b
+            jb .invalidSpecifier     ; TODO: error handling and put rax 
 
-            ; jmp rax, [.specifierHandlers + rax * 8 ] 
-
-            ;sub al, 'b'             ; получаем номер адреса
-
-            ;mov rax, [.specifierHandlers + rax * 8]  
-            jmp [.specifierHandlers + (rax - 'b') * 8]              
+            jmp [.specifierHandlers + (rax - 'b') * ADDRESS_SIZE]                ; jump
 
 ;-------------------------------------------------------------------------------
 ;
-; Таблица переходов для обработки спецификаторов:
-;   - %b: двоичное число
-;   - %c: символ
-;   - %d: десятичное число
-;   - %o: восьмеричное число
-;   - %s: строка
-;   - %x: шестнадцатеричное число
+; Jump table for symbols: b, c, d, o, s, x.
 ;
 ;-------------------------------------------------------------------------------
+
+;-----Start of jump table-------------------------------------------------------
 
 .specifierHandlers:
 
-            dq .handleBinary             ; case 'b'
-            dq .handleChar               ; case 'c'
-            dq .handleDecimal            ; case 'd'
+                                  dq .handleBinary             ; case 'b'
+                                  dq .handleChar             ; case 'c'
+                                  dq .handleDecimal             ; case 'd'
 
-            times ('n' - 'd') dq .invalidSpecifier           
+            times ('o' - 'd' - 1) dq .invalidSpecifier      
                                                             
-            dq .handleOctal              ; case 'o'              
+                                  dq .handleOctal             ; case 'o'              
                                                              
-            times ('r' - 'o') dq .invalidSpecifier           
+            times ('s' - 'o' - 1) dq .invalidSpecifier           
                                                             
-            dq .handleString             ; case 's'              
+                                  dq .handleString             ; case 's'              
                                                             
-            times ('w' - 's') dq .invalidSpecifier           
+            times ('x' - 's' - 1) dq .invalidSpecifier           
 
-            dq .handleHex                  ; case 'x'
-;------------------------------------------------------------------------------
+                                  dq .handleHex             ; case 'x'
 
+;-----End of jump table---------------------------------------------------------
 
-;-------------------------------------------------------------------------------
-; обработка спецификатора '%c' 
-;-------------------------------------------------------------------------------
+;-----Start of case 'c'---------------------------------------------------------
 
 .handleChar:
             inc rbx
 
-            mov al, [rbp + 16 + 8 * rbx]
+            mov al, [rbp + 16 + ADDRESS_SIZE * rbx]
 
-            stosb
+            stosb 
 
-            checkOverflow           ; проверка на переполнение буфера
+            checkOverflow
 
             jmp .processFormatString
-;-------------------------------------------------------------------------------
 
+;-----End of case 'c'-----------------------------------------------------------
 
-;-------------------------------------------------------------------------------
-; обработка спецификатора '%s' 
-;-------------------------------------------------------------------------------
+;-----Start of case 's'---------------------------------------------------------
 
 .handleString:
 
             inc rbx
 
-            push rsi                ; сохраняем rsi
+            push rsi                ; save rsi
 
-            mov rsi, [rbp + 16 + 8 * rbx]
+            mov rsi, [rbp + 16 + ADDRESS_SIZE * rbx]
 
             call copyStringToBuffer
 
-            pop rsi                 ; восстанавливаем rsi
+            pop rsi                 ; get rsi
 
             jmp .processFormatString
-;-------------------------------------------------------------------------------
 
+;-----End of case 's'-----------------------------------------------------------
 
-;-------------------------------------------------------------------------------
-; обработка спецификатора '%d' 
-;-------------------------------------------------------------------------------
+;-----Start of case 'd'---------------------------------------------------------
 
 .handleDecimal:
 
+;-----End of case 'd'-----------------------------------------------------------
+
             call printDecimalNumber
             jmp .processFormatString
-;-------------------------------------------------------------------------------
 
-
-;-------------------------------------------------------------------------------
-; обработка спецификатора '%b' 
-;-------------------------------------------------------------------------------
+;-----Start of case 'b'---------------------------------------------------------
 
 .handleBinary:
 
             mov cl, 1
             call printNumBase2n
             jmp .processFormatString 
-;-------------------------------------------------------------------------------
 
-;-------------------------------------------------------------------------------
-; обработка спецификатора '%o' 
-;-------------------------------------------------------------------------------
+;-----End of case 'b'-----------------------------------------------------------
+
+;-----Start of case 'o'---------------------------------------------------------
 
 .handleOctal:
 
             mov cl, 3
             call printNumBase2n
             jmp .processFormatString
-;-------------------------------------------------------------------------------
 
+;-----End of case 'o'-----------------------------------------------------------
 
-;-------------------------------------------------------------------------------
-; обработка спецификатора '%x' 
-;-------------------------------------------------------------------------------
+;-----Start of case 'x'---------------------------------------------------------
 
 .handleHex:
 
             mov cl, 4
             call printNumBase2n
             jmp .processFormatString 
-;-------------------------------------------------------------------------------
+
+;-----End of case 'x'-----------------------------------------------------------
 
 .invalidSpecifier:
 
@@ -286,17 +266,37 @@ myPrintfImpl:
 
             jmp .processFormatString
 
-endProcessing:
+.endProcessing:
+
             call flushBuffer
 
-            xor rax, rax            ; rdi - возвращаемое значение 0
+            xor rax, rax            ; rdi - return value 0
             ret
+
+;-----End of myPrintf label-----------------------------------------------------
+
+;-------------------------------------------------------------------------------
+;
+; [Brief]: Copies from src to dest
+;
+; [Expects]: rdi - dest
+;            rsi - src
+;
+;           
+;           
+; [Destroy]: al
+;
+; [Save]:    rsi, rdi, rbx, rbp 
+;
+;-------------------------------------------------------------------------------
+
+;-----Start of copy2Buffer label------------------------------------------------
 
 copyStringToBuffer:
 
 .copyByte:
 
-            checkOverflow           ; проверка на переполнение буфера
+            checkOverflow
 
             lodsb
             cmp al, EOL
@@ -311,98 +311,140 @@ copyStringToBuffer:
 
             ret
 
+;-----End of copy2Buffer label--------------------------------------------------
+
+;-------------------------------------------------------------------------------
+;
+; [Brief]: Print number of base 2^n (n = 1, 3, 4)
+;
+; [Expects]: rdi - format string,
+;            rbx - argument count
+;             cl - base
+;
+; [Sets]:
+;            r8  - bit mask
+;            rdx - value 
+;           
+;           
+; [Destroy]: rax, rdx, rcx
+;
+; [Save]:    rsi, rdi, rbx, rbp 
+;
+;-------------------------------------------------------------------------------
+
+;-----Start of printNumBase2n label---------------------------------------------
+
 printNumBase2n:
+    inc rbx
 
-            inc rbx                 ; увеличиваем счетчик аргументов
-
-            mov rdx, [rbp + 16 + 8 * rbx]
-
-            call countBytes
-            
-            add rdi, rax
-
-            mov byte [rdi], EOL
-            dec rdi
-
-            push rax
-
-            mov r8, 01b
-            shl r8, cl
-            dec r8
-
+    mov rdx, [rbp + 16 + 8 * rbx]  
+    
+    
+    push rdi                 ; сохраняем текущую позицию в буфере
+    
+    ; Пропускаем место для числа
+    call countBytesNumBase2n
+    add rdi, rax               
+    mov byte [rdi], ' '      ; добавляем пробел после числа
+    push rax                 ; сохраняем размер числа
+    
+    ; Печатаем число справа налево
+    mov r8, 01b              
+    shl r8, cl
+    dec r8
+    
 .isNegative:
-
-            test edx, edx
-            jns .printDigits
-            
-            mov al, '-'
-            stosb
-
-            neg edx
+    test edx, edx
+    jns .printDigits
+    mov al, '-'
+    stosb
+    neg edx
 
 .printDigits:
+    mov rax, r8
+    and rax, rdx
+    shr edx, cl
+    mov al, [hexTable + rax]
+    mov [rdi], al
+    dec rdi
+    test edx, edx
+    jne .printDigits
+    
+    ; Восстанавливаем позицию в буфере
+    pop rax
+    pop rdi
+    add rdi, rax
+    inc rdi                  ; пропускаем добавленный пробел
+    
+    checkOverflow
+    
+    ret
 
-            checkOverflow           ; проверка на переполнение буфера
+;-----End of printNumBase2n label-----------------------------------------------
 
-            mov rax, r8
-            and rax, rdx
+;-------------------------------------------------------------------------------
+;
+; [Brief]: Print number of base 10
+;
+; [Expects]: rdi - format string,
+;            rbx - argument count
+;
+; [Sets]:
+;            r8 - value
+;            r9 - counts bytes need to print
+;            r10 - quotient
+;           
+;           
+; [Destroy]: rax, rdx
+;
+; [Save]:    rsi, rdi, rbx, rbp 
+;
+;-------------------------------------------------------------------------------
 
-            shr edx, cl
-
-            mov al, [hexTable + rax]  
-            mov [rdi], al
-            dec di
-
-            test edx, edx
-
-            jne .printDigits
-
-            pop rax
-
-            add rdi, rax
-
-            inc rdi
-
-            ret
+;-----Start of printNumBase10 label---------------------------------------------
 
 printDecimalNumber:
 
             inc rbx
 
-            mov rdx, [rbp + 16 + 8 * rbx]
-
-            call countBytes
-
-            add rdi, rax
-
-            mov byte [rdi], EOL
-
-            push rax
-
-            push rbx               ; сохраняем rbx
+            mov r8, [rbp + 16 + 8 * rbx]
 
 .isNegative:
+            mov rdx, r8
+            
+            test edx, edx
+            jns .continue
 
-            mov ebx, 10 
-            mov eax, edx
-
-            test edx, edx           ; проверка на знак
-            jns .printDigits
-
-            mov al, '-'             ; символ '-'
+            mov al, '-'
             stosb
 
-            mov eax, edx                  
+            neg edx
+            mov r8, rdx
+.continue:
 
-            neg eax                 ; делаем число беззнаковым
+            mov r10, 10 
+            mov rax, r8
+            xor r9, r9              ; for count bytes
 
+.countBytesNumBase10:
 
-.printDigits:
+            xor rdx, rdx
+            inc r9
+            div r10
 
-            checkOverflow           ; проверка на переполнение буфера
+            test eax, eax
 
-            xor edx, edx            ; очищаем rdx 
-            div ebx
+            jne .countBytesNumBase10
+
+            add rdi, r9
+
+            mov rax, r8
+
+.loop:
+            checkOverflow
+
+            xor rdx, rdx
+            div r10
 
             add dl, '0'
             mov [rdi], dl
@@ -410,32 +452,51 @@ printDecimalNumber:
 
             test eax, eax
 
-            jne .printDigits
+            jne .loop
 
-            pop rbx
+            add rdi, r9
 
-            pop rax
-
-            add rdi, rax
-
-            inc rdi
             inc rdi
 
             ret
 
-; rdx - значение, cl - основание, результат - ch
-countBytes:
+;-----End of printNumBase10 label-----------------------------------------------
+
+;-------------------------------------------------------------------------------
+;
+; [Brief]: Count bytes need to print for a number of base 2^n (n = 1, 3, 4)
+;
+; [Expects]: rdx - value,
+;            cl - base
+;
+; [Sets]:
+;            r8 - value
+;            r9 - counts bytes need to print
+;            r10 - quotient
+;           
+;           
+; [Destroy]: rax, rdx
+;
+; [Return];  ch - amount of bytes needed
+;
+; [Save]:    rsi, rdi, rbx, rbp 
+;
+;-------------------------------------------------------------------------------
+
+;-----Start of countBytes label-------------------------------------------------
+
+countBytesNumBase2n:                            ; TODO: use another buffer with string and then reverse
 
             xor rax, rax
             xor ch, ch
             mov rax, rdx
 
-.countLoop:
+.loop:
             inc ch
             shr rax, cl
 
             test rax, rax
-            jne .countLoop
+            jne .loop
 
             xor rax, rax
 
@@ -443,24 +504,53 @@ countBytes:
 
             ret
 
+;-----End of countBytes label----------------------------------------------------
+
+;-------------------------------------------------------------------------------
+;
+; [Brief]: Flushes the buffer
+;
+; [Expects]: rdi - address of last byte needed to be printed,
+;            
+;
+; [Sets]:
+;            rdi - back to the begining
+;           
+; [Destroy]: rax
+;
+; [Save]:    rsi, rdx
+;
+;-------------------------------------------------------------------------------
+
+;-----Start of flushBuffer label------------------------------------------------
 
 flushBuffer:
-            push rsi
-            push rdx
+    push rsi
+    push rdx
+    push rdi
+    
+    ; Calculate length to write
+    mov rdx, rdi
+    sub rdx, buffer
+    
+    ; Skip if buffer is empty
+    test rdx, rdx
+    jz .end
+    
+    ; Write to stdout
+    mov rax, 1          ; sys_write
+    mov rdi, 1          ; stdout
+    mov rsi, buffer
+    syscall
+    
+    ; Reset buffer position
+.end:
+    pop rdi
+    mov rdi, buffer     ; reset buffer pointer
+    pop rdx
+    pop rsi
+    ret
 
-            sub rdi, buffer         ; '\n' добавляется
-            mov rdx, rdi
-
-            mov rax, 0x01           ; системный вызов write ()
-            mov rdi, 1
-            mov rsi, buffer
-            syscall
-
-            pop rdx
-            pop rsi
-
-            mov rdi, buffer         ; сбрасываем буфер
-
-            ret
-
+;-----End of flushBuffer lable--------------------------------------------------
+; 
 section .note.GNU-stack noalloc noexec nowrite progbits
