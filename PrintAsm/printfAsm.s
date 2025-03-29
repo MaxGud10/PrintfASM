@@ -1,11 +1,11 @@
 global myPrintf
 
 ;-----Start of constants--------------------------------------------------------
-
 EOL          equ 00
-BUFFER_LEN   equ 264
+BUFFER_LEN   equ 1024
 ADDRESS_SIZE equ 8
-
+SUCCESS      equ 0
+ERROR        equ -1
 ;-----End of constants----------------------------------------------------------
 
 ;----Start of checkOverflow macro-----------------------------------------------
@@ -44,7 +44,7 @@ buffer      resb BUFFER_LEN
 
 section .data
 
-hexTable    db '0123456789ABCDEF'
+hexTable  db '0123456789ABCDEF'
 
 section .text
 
@@ -73,13 +73,9 @@ myPrintf:
             call myPrintfImpl          
 
             pop rbp                 ; stack frame epilogue
-
             pop r10                 ; pop old address
-
             add rsp, 6 * 8          ; balance the stack
-
             push r10                ; push return address 
-
             ret
 
 ;-----end of myPrintfC label----------------------------------------------------
@@ -112,23 +108,24 @@ myPrintfImpl:
 
             mov rbx, 0              ; argument counter
 
+            xor r11, r11            ; общий счетчик выведенных байт
+
 .processFormatString:
             xor rax, rax            ; clean rax
 
             lodsb
 
             cmp al, EOL
-
             je .endProcessing
 
             cmp al, '%'
-
             je .conversionSpecifier
 
-            mov [rdi], al           ; copy char to buffer 
-            inc rdi                 ; shift buffer address
+        ;     mov [rdi], al           ; copy char to buffer 
+        ;     inc rdi                 ; shift buffer address
+            stosb ; ???
 
-            checkOverflow           ; проверка на переполнение буфера
+            checkOverflow           
 
             jmp .processFormatString           ; proceed to next char
 
@@ -147,7 +144,7 @@ myPrintfImpl:
             cmp al, 'b'             ; sym < b
             jb .invalidSpecifier     ; TODO: error handling and put rax 
 
-            jmp [.specifierHandlers + (rax - 'b') * ADDRESS_SIZE]                ; jump
+            jmp [.specifierHandlers + (rax - 'b') * ADDRESS_SIZE]             
 
 ;-------------------------------------------------------------------------------
 ;
@@ -185,6 +182,7 @@ myPrintfImpl:
             mov al, [rbp + 16 + ADDRESS_SIZE * rbx]
 
             stosb 
+            inc r11                 ; увеличиваем счетчик байт
 
             checkOverflow
 
@@ -254,7 +252,9 @@ myPrintfImpl:
             mov byte [rdi], '%'
             inc rdi
 
-            checkOverflow           ; проверка на переполнение буфера
+            inc r11
+
+            checkOverflow           ; ???????? ?? ???????????? ??????
 
             jmp .processFormatString
 
@@ -262,7 +262,9 @@ myPrintfImpl:
 
             stosb
 
-            checkOverflow           ; проверка на переполнение буфера
+            inc r11
+
+            checkOverflow           ; ???????? ?? ???????????? ??????
 
             jmp .processFormatString
 
@@ -270,7 +272,14 @@ myPrintfImpl:
 
             call flushBuffer
 
+            test rax, rax           ; проверка на ошибку
+            jnz .endWithError
+
             xor rax, rax            ; rdi - return value 0
+            ret
+
+.endWithError:
+            mov rax, ERROR          ; возвращаем код ошибки
             ret
 
 ;-----End of myPrintf label-----------------------------------------------------
@@ -305,6 +314,8 @@ copyStringToBuffer:
 
             stosb
 
+            inc r11
+
             jmp .copyByte
 
 .end:
@@ -335,50 +346,50 @@ copyStringToBuffer:
 ;-----Start of printNumBase2n label---------------------------------------------
 
 printNumBase2n:
-    inc rbx
-
-    mov rdx, [rbp + 16 + 8 * rbx]  
+            inc rbx
+            mov rdx, [rbp + 16 + 8 * rbx]  
     
+            push rdi                 
     
-    push rdi                 ; сохраняем текущую позицию в буфере
+            call countBytesNumBase2n
+            add rdi, rax               
+            mov byte [rdi], ' '      
+            push rax                 
     
-    ; Пропускаем место для числа
-    call countBytesNumBase2n
-    add rdi, rax               
-    mov byte [rdi], ' '      ; добавляем пробел после числа
-    push rax                 ; сохраняем размер числа
-    
-    ; Печатаем число справа налево
-    mov r8, 01b              
-    shl r8, cl
-    dec r8
+            mov r8, 01b              
+            shl r8, cl
+            dec r8
     
 .isNegative:
-    test edx, edx
-    jns .printDigits
-    mov al, '-'
-    stosb
-    neg edx
+            test edx, edx
+            jns .printDigits
+            mov al, '-'
+            stosb
+
+            inc r11
+
+            neg edx
 
 .printDigits:
-    mov rax, r8
-    and rax, rdx
-    shr edx, cl
-    mov al, [hexTable + rax]
-    mov [rdi], al
-    dec rdi
-    test edx, edx
-    jne .printDigits
+            mov rax, r8
+            and rax, rdx
+            shr edx, cl
+            mov al, [hexTable + rax]
+            mov [rdi], al
+            dec rdi
+            test edx, edx
+            jne .printDigits
     
-    ; Восстанавливаем позицию в буфере
-    pop rax
-    pop rdi
-    add rdi, rax
-    inc rdi                  ; пропускаем добавленный пробел
+            pop rax
+            pop rdi
+            add rdi, rax
+            inc rdi                 ; пропускаем добавленный пробел
+            add r11, rax            ; добавляем длину числа к счетчику
+            inc r11                 ; добавляем пробел           
     
-    checkOverflow
+            checkOverflow
     
-    ret
+            ret
 
 ;-----End of printNumBase2n label-----------------------------------------------
 
@@ -417,6 +428,8 @@ printDecimalNumber:
 
             mov al, '-'
             stosb
+
+            inc r11
 
             neg edx
             mov r8, rdx
@@ -457,6 +470,8 @@ printDecimalNumber:
             add rdi, r9
 
             inc rdi
+
+            add r11, r9         ; обавляем длину числа к счетчику
 
             ret
 
@@ -525,31 +540,37 @@ countBytesNumBase2n:                            ; TODO: use another buffer with 
 ;-----Start of flushBuffer label------------------------------------------------
 
 flushBuffer:
-    push rsi
-    push rdx
-    push rdi
-    
-    ; Calculate length to write
-    mov rdx, rdi
-    sub rdx, buffer
-    
-    ; Skip if buffer is empty
-    test rdx, rdx
-    jz .end
-    
-    ; Write to stdout
-    mov rax, 1          ; sys_write
-    mov rdi, 1          ; stdout
-    mov rsi, buffer
-    syscall
-    
-    ; Reset buffer position
+            push rsi
+            push rdx
+            push rdi
+            
+            mov rdx, rdi
+            sub rdx, buffer
+            test rdx, rdx
+            jz .success
+            
+            mov rax, 1          ; sys_write
+            mov rdi, 1          ; stdout
+            mov rsi, buffer
+            syscall
+            
+            ; Проверяем на ошибку
+            cmp rax, 0
+            jl .error
+            
+.success:
+            mov rdi, buffer     ; reset buffer pointer
+            xor rax, rax        ; возвращаем успех
+            jmp .end
+            
+.error:
+            mov rax, ERROR      ; возвращаем ошибку
+            
 .end:
-    pop rdi
-    mov rdi, buffer     ; reset buffer pointer
-    pop rdx
-    pop rsi
-    ret
+            pop rdi
+            pop rdx
+            pop rsi
+            ret
 
 ;-----End of flushBuffer lable--------------------------------------------------
 ; 
