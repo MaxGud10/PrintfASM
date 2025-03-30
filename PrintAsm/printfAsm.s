@@ -1,5 +1,24 @@
-global myPrintf
+section .rodata
+hexTable    db '0123456789ABCDEF'
 
+;-------------------------------------------------------------------------------
+;
+; Jump table for symbols: b, c, d, o, s, x.
+;
+;-------------------------------------------------------------------------------
+
+specifierHandlers:
+                                  dq handleBinary                   ; case 'b'
+                                  dq handleChar                     ; case 'c'
+                                  dq handleDecimal                  ; case 'd'
+            times ('o' - 'd' - 1) dq myPrintfImpl.invalidSpecifier      
+                                  dq handleOctal                    ; case 'o'              
+            times ('s' - 'o' - 1) dq myPrintfImpl.invalidSpecifier           
+                                  dq handleString                   ; case 's'              
+            times ('x' - 's' - 1) dq myPrintfImpl.invalidSpecifier           
+                                  dq handleHex                      ; case 'x'
+
+section .data
 ;-----Start of constants--------------------------------------------------------
 EOL          equ 00
 BUFFER_LEN   equ 1024
@@ -8,38 +27,37 @@ SUCCESS      equ 0
 ERROR        equ -1
 ;-----End of constants----------------------------------------------------------
 
+section .bss
+buffer      resb BUFFER_LEN                                         ; output buffer
+
+section .text
+global myPrintf
+
+global handleBinary, handleChar, handleDecimal, handleOctal, handleString, handleHex, handlePercent
+
 ;-----Macros-------------------------------------------------------------------
 %macro checkOverflow 0
-
         cmp rdi, buffer + BUFFER_LEN - 64 - 1
+
         jb %%noFlush
 
         call flushBuffer
-%%noFlush:
 
+        test rax, rax
+        jnz myPrintfImpl.endWithError
+%%noFlush:
 %endmacro
 
-%macro  multipush 1-* 
+%macro multipush 1-* 
 
-        %rep  %0
+        %rep %0
 
-        push    %1
+        push %1
 
         %rotate 1
-
+        
         %endrep 
-
 %endmacro
-
-; section .bss
-
-; buffer      resb BUFFER_LEN
-
-; section .data
-
-; hexTable  db '0123456789ABCDEF'
-
-section .text
 
 ;-------------------------------------------------------------------------------
 ;
@@ -52,7 +70,6 @@ section .text
 ;-------------------------------------------------------------------------------
 
 ;-----start of myPrintf label--------------------------------------------------
-
 myPrintf:    
             pop r10                 ; save return address
 
@@ -70,7 +87,6 @@ myPrintf:
             add rsp, 6 * 8          ; balance the stack
             push r10                ; push return address 
             ret
-
 ;-----end of myPrintfC label----------------------------------------------------
 
 ;-------------------------------------------------------------------------------
@@ -95,481 +111,306 @@ myPrintf:
 
 ;-----start of myPrintf label---------------------------------------------------
 myPrintfImpl:
-            mov rsi, [rbp + 16]     ; format string 
+                mov rsi, [rbp + 16]     ; format string 
 
-            mov rdi, buffer         ; buffer 
+                mov rdi, buffer         ; buffer 
 
-            mov rbx, 0              ; argument counter
+                xor rbx, rbx            ; argument counter
 
-            xor r11, r11            ; ????? ??????? ?????????? ????
+                xor r11, r11            ; init byte counter
 
 .processFormatString:
-            xor rax, rax            ; clean rax
 
-            lodsb
+                lodsb
 
-            cmp al, EOL
-            je .endProcessing
+                test al, al
+                jz .endProcessing       ; end if null terminator
 
-            cmp al, '%'
-            je .conversionSpecifier
+                cmp al, '%'
+                je .conversionSpecifier ; handle format specifier
 
-        ;     mov [rdi], al           ; copy char to buffer 
-        ;     inc rdi                 ; shift buffer address
-            stosb ; ???
+                stosb
+                inc r11
 
-            checkOverflow           
+                checkOverflow
 
-            jmp .processFormatString           ; proceed to next char
+                jmp .processFormatString
 
 .conversionSpecifier:
 
-            xor rax, rax            ; clean rax
+                lodsb
 
-            lodsb                   ; load next symbol                   
+                cmp al, '%'
+                je handlePercent
 
-            cmp al, '%'             ; case '%'
-            je .printPercent
+                cmp al, 'b'
+                jb .invalidSpecifier
 
-            cmp al, 'x'             ; sym > x
-            ja .invalidSpecifier
+                cmp al, 'x'
+                ja .invalidSpecifier
 
-            cmp al, 'b'             ; sym < b
-            jb .invalidSpecifier     
-
-            jmp [.specifierHandlers + (rax - 'b') * ADDRESS_SIZE]             
-
-;-------------------------------------------------------------------------------
-;
-; Jump table for symbols: b, c, d, o, s, x.
-;
-;-------------------------------------------------------------------------------
-
-;-----Start of jump table-------------------------------------------------------
-
-.specifierHandlers:
-
-                                  dq .handleBinary           ; case 'b'
-                                  dq .handleChar             ; case 'c'
-                                  dq .handleDecimal          ; case 'd'
-
-            times ('o' - 'd' - 1) dq .invalidSpecifier      
-                                                            
-                                  dq .handleOctal            ; case 'o'              
-                                                             
-            times ('s' - 'o' - 1) dq .invalidSpecifier           
-                                                            
-                                  dq .handleString           ; case 's'              
-                                                            
-            times ('x' - 's' - 1) dq .invalidSpecifier           
-
-                                  dq .handleHex              ; case 'x'
-
-;-----End of jump table---------------------------------------------------------
-
-;-----Start of case 'c'---------------------------------------------------------
-
-.handleChar:
-            inc rbx
-
-            mov al, [rbp + 16 + ADDRESS_SIZE * rbx]
-
-            stosb 
-            inc r11                
-
-            checkOverflow
-
-            jmp .processFormatString
-
-;-----End of case 'c'-----------------------------------------------------------
-
-;-----Start of case 's'---------------------------------------------------------
-
-.handleString:
-
-            inc rbx
-
-            push rsi                ; save rsi
-
-            mov rsi, [rbp + 16 + ADDRESS_SIZE * rbx]
-
-            call copyStringToBuffer
-
-            pop rsi                 ; get rsi
-
-            jmp .processFormatString
-
-;-----End of case 's'-----------------------------------------------------------
-
-;-----Start of case 'd'---------------------------------------------------------
-
-.handleDecimal:
-
-;-----End of case 'd'-----------------------------------------------------------
-
-            call printDecimalNumber
-            jmp .processFormatString
-
-;-----Start of case 'b'---------------------------------------------------------
-
-.handleBinary:
-
-            mov cl, 1
-            call printNumBase2n
-            jmp .processFormatString 
-
-;-----End of case 'b'-----------------------------------------------------------
-
-;-----Start of case 'o'---------------------------------------------------------
-
-.handleOctal:
-
-            mov cl, 3
-            call printNumBase2n
-            jmp .processFormatString
-
-;-----End of case 'o'-----------------------------------------------------------
-
-;-----Start of case 'x'---------------------------------------------------------
-
-.handleHex:
-
-            mov cl, 4
-            call printNumBase2n
-            jmp .processFormatString 
-
-;-----End of case 'x'-----------------------------------------------------------
+                ; use jump table to handle specifier
+                mov rcx, [specifierHandlers + (rax - 'b') * ADDRESS_SIZE]
+                jmp rcx
 
 .invalidSpecifier:
+                mov byte [rdi], '%'
 
-            mov byte [rdi], '%'
-            inc rdi
+                inc rdi
+                inc r11
 
-            inc r11
-
-            checkOverflow           
-
-            jmp .processFormatString
-
-.printPercent:
-
-            stosb
-
-            inc r11
-
-            checkOverflow          
-
-            jmp .processFormatString
+                checkOverflow
+                
+                jmp .processFormatString
 
 .endProcessing:
 
-            call flushBuffer
+                call flushBuffer
 
-            test rax, rax           
-            jnz .endWithError
+                test rax, rax
+                jnz .endWithError
 
-            xor rax, rax            ; rdi - return value 0
-            ret
+                mov rax, r11
+                ret
 
 .endWithError:
-            mov rax, ERROR          
-            ret
+                mov rax, ERROR
 
-;-----End of myPrintf label-----------------------------------------------------
+                ret
 
-;-------------------------------------------------------------------------------
-;
-; [Brief]: Copies from src to dest
-;
-; [Expects]: rdi - dest
-;            rsi - src
-;
-;           
-;           
-; [Destroy]: al
-;
-; [Save]:    rsi, rdi, rbx, rbp 
-;
-;-------------------------------------------------------------------------------
+;-----handlers (global labels)-------------------------------------------
+handlePercent:
 
-;-----Start of copy2Buffer label------------------------------------------------
+                stosb
 
+                inc r11
+
+                checkOverflow
+
+                jmp myPrintfImpl.processFormatString
+
+handleChar:
+                inc rbx
+
+                mov al, [rbp + 16 + ADDRESS_SIZE * rbx]
+
+                stosb 
+
+                inc r11
+
+                checkOverflow
+
+                jmp myPrintfImpl.processFormatString
+
+handleString:
+                inc rbx
+                push rsi
+                mov rsi, [rbp + 16 + ADDRESS_SIZE * rbx]
+
+                call copyStringToBuffer
+
+                pop rsi
+
+                jmp myPrintfImpl.processFormatString
+
+handleDecimal:
+
+                call printDecimalNumber
+                jmp myPrintfImpl.processFormatString
+
+handleBinary:
+
+                mov cl, 1
+                call printNumBase2n
+                jmp myPrintfImpl.processFormatString
+
+handleOctal:
+
+                mov cl, 3
+                call printNumBase2n
+                jmp myPrintfImpl.processFormatString
+
+handleHex:
+
+                mov cl, 4
+                call printNumBase2n
+                jmp myPrintfImpl.processFormatString
+
+;-----helper functions-------------------------------------------------
 copyStringToBuffer:
 
 .copyByte:
 
-            checkOverflow
+                checkOverflow
 
-            lodsb
-            cmp al, EOL
+                lodsb
 
-            je .end
+                test al, al
+                jz .end
 
-            stosb
+                stosb
 
-            inc r11
-
-            jmp .copyByte
+                inc r11
+                jmp .copyByte
 
 .end:
+                ret
 
-            ret
+flushBuffer:
 
-;-----End of copy2Buffer label--------------------------------------------------
+                push rsi
+                push rdx
+                push rdi
+                
+                mov rdx, rdi
+                sub rdx, buffer
+                jz .success            ; nothing to flush
+                
+                mov rax, 1             ; sys_write
+                mov rdi, 1             ; stdout
+                mov rsi, buffer
+                syscall
+                
+                cmp rax, 0
+                jl .error
+        
+.success:
 
-;-------------------------------------------------------------------------------
-;
-; [Brief]: Print number of base 2^n (n = 1, 3, 4)
-;
-; [Expects]: rdi - format string,
-;            rbx - argument count
-;             cl - base
-;
-; [Sets]:
-;            r8  - bit mask
-;            rdx - value 
-;           
-;           
-; [Destroy]: rax, rdx, rcx
-;
-; [Save]:    rsi, rdi, rbx, rbp 
-;
-;-------------------------------------------------------------------------------
+                mov rdi, buffer        ; reset buffer pointer
+                xor rax, rax
+                jmp .end
+        
+.error:
 
-;-----Start of printNumBase2n label---------------------------------------------
+                mov rax, ERROR
+        
+.end:
+
+                pop rdi
+                pop rdx
+                pop rsi
+                ret
 
 printNumBase2n:
-            inc rbx
-            mov rdx, [rbp + 16 + 8 * rbx]  
-    
-            push rdi                 
-    
-            call countBytesNumBase2n
-            add rdi, rax               
-            mov byte [rdi], ' '      
-            push rax                 
-    
-            mov r8, 01b              
-            shl r8, cl
-            dec r8
-    
+
+                ; print number in base 2^n (binary/octal/hex)
+                inc rbx
+                mov rdx, [rbp + 16 + 8 * rbx]  
+                push rdi       
+
+                call countBytesNumBase2n
+
+                add rdi, rax               
+                mov byte [rdi], ' '
+
+                push rax          
+
+                mov r8, 01b              
+                shl r8, cl
+                dec r8
+
 .isNegative:
-            test edx, edx
-            jns .printDigits
-            mov al, '-'
-            stosb
 
-            inc r11
+                test edx, edx
+                jns .printDigits
 
-            neg edx
+                mov al, '-'
+
+                stosb
+
+                inc r11
+                neg edx
 
 .printDigits:
-            mov rax, r8
-            and rax, rdx
-            shr edx, cl
-            mov al, [hexTable + rax]
-            mov [rdi], al
-            dec rdi
-            test edx, edx
-            jne .printDigits
-    
-            pop rax
-            pop rdi
-            add rdi, rax
-            inc rdi                 
-            add r11, rax            
-            inc r11                            
-    
-            checkOverflow
-    
-            ret
 
-;-----End of printNumBase2n label-----------------------------------------------
+                mov rax, r8
+                and rax, rdx
+                shr edx, cl
+                mov al, [hexTable + rax]
+                mov [rdi], al
+                dec rdi
 
-;-------------------------------------------------------------------------------
-;
-; [Brief]: Print number of base 10
-;
-; [Expects]: rdi - format string,
-;            rbx - argument count
-;
-; [Sets]:
-;            r8 - value
-;            r9 - counts bytes need to print
-;            r10 - quotient
-;           
-;           
-; [Destroy]: rax, rdx
-;
-; [Save]:    rsi, rdi, rbx, rbp 
-;
-;-------------------------------------------------------------------------------
+                test edx, edx
+                jne .printDigits
 
-;-----Start of printNumBase10 label---------------------------------------------
+                pop rax
+                pop rdi
+                add rdi, rax
+                inc rdi                 
+                add r11, rax            
+                inc r11            
+
+                checkOverflow
+
+                ret
 
 printDecimalNumber:
 
-            inc rbx
-
-            mov r8, [rbp + 16 + 8 * rbx]
+                inc rbx
+                mov r8, [rbp + 16 + 8 * rbx]
 
 .isNegative:
-            mov rdx, r8
-            
-            test edx, edx
-            jns .continue
 
-            mov al, '-'
-            stosb
+                mov rdx, r8
+                test edx, edx
+                jns .continue
 
-            inc r11
-
-            neg edx
-            mov r8, rdx
+                mov al, '-'
+                stosb
+                inc r11
+                neg edx
+                mov r8, rdx
 .continue:
 
-            mov r10, 10 
-            mov rax, r8
-            xor r9, r9              ; for count bytes
+                mov r10, 10 
+                mov rax, r8
+                xor r9, r9
 
 .countBytesNumBase10:
 
-            xor rdx, rdx
-            inc r9
-            div r10
+                xor rdx, rdx
+                inc r9
+                div r10
 
-            test eax, eax
+                test eax, eax
+                jne .countBytesNumBase10
 
-            jne .countBytesNumBase10
+                add rdi, r9
+                mov rax, r8
+.loop:
 
-            add rdi, r9
+                checkOverflow
 
-            mov rax, r8
+                xor rdx, rdx
+                div r10
+                add dl, '0'
+                mov [rdi], dl
+                dec rdi
+
+                test eax, eax
+                jne .loop
+
+                add rdi, r9
+                inc rdi
+                add r11, r9         
+                ret
+
+countBytesNumBase2n:       
+
+                xor rax, rax
+                xor ch, ch
+                mov rax, rdx
 
 .loop:
-            checkOverflow
 
-            xor rdx, rdx
-            div r10
+                inc ch
+                shr rax, cl
 
-            add dl, '0'
-            mov [rdi], dl
-            dec rdi
+                test rax, rax
+                jne .loop
 
-            test eax, eax
-
-            jne .loop
-
-            add rdi, r9
-
-            inc rdi
-
-            add r11, r9         
-
-            ret
-
-;-----End of printNumBase10 label-----------------------------------------------
-
-;-------------------------------------------------------------------------------
-;
-; [Brief]: Count bytes need to print for a number of base 2^n (n = 1, 3, 4)
-;
-; [Expects]: rdx - value,
-;            cl - base
-;
-; [Sets]:
-;            r8 - value
-;            r9 - counts bytes need to print
-;            r10 - quotient
-;           
-;           
-; [Destroy]: rax, rdx
-;
-; [Return];  ch - amount of bytes needed
-;
-; [Save]:    rsi, rdi, rbx, rbp 
-;
-;-------------------------------------------------------------------------------
-
-;-----Start of countBytes label-------------------------------------------------
-
-countBytesNumBase2n:                          
-
-            xor rax, rax
-            xor ch, ch
-            mov rax, rdx
-
-.loop:
-            inc ch
-            shr rax, cl
-
-            test rax, rax
-            jne .loop
-
-            xor rax, rax
-
-            mov al, ch
-
-            ret
-
-;-----End of countBytes label----------------------------------------------------
-
-;-------------------------------------------------------------------------------
-;
-; [Brief]: Flushes the buffer
-;
-; [Expects]: rdi - address of last byte needed to be printed,
-;            
-;
-; [Sets]:
-;            rdi - back to the begining
-;           
-; [Destroy]: rax
-;
-; [Save]:    rsi, rdx
-;
-;-------------------------------------------------------------------------------
-
-;-----Start of flushBuffer label------------------------------------------------
-
-flushBuffer:
-            push rsi
-            push rdx
-            push rdi
-            
-            mov rdx, rdi
-            sub rdx, buffer
-            test rdx, rdx
-            jz .success
-            
-            mov rax, 1          ; sys_write
-            mov rdi, 1          ; stdout
-            mov rsi, buffer
-            syscall
-            
-            cmp rax, 0
-            jl .error
-            
-.success:
-            mov rdi, buffer     ; reset buffer pointer
-            xor rax, rax        
-            jmp .end
-            
-.error:
-            mov rax, ERROR      
-            
-.end:
-            pop rdi
-            pop rdx
-            pop rsi
-            ret
-
-;-----End of flushBuffer lable--------------------------------------------------
-
-section .bss
-buffer      resb BUFFER_LEN
-
-section .data
-hexTable    db '0123456789ABCDEF'
+                xor rax, rax
+                mov al, ch
+                ret
 
 section .note.GNU-stack noalloc noexec nowrite progbits
