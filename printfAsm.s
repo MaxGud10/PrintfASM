@@ -417,5 +417,3 @@ ERROR        equ -1
 
 section .bss
 buffer      resb BUFFER_LEN                                         ; output buffer
-
-section .note.GNU-stack noalloc noexec nowrite progbits
